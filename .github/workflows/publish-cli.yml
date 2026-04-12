@@ -61,6 +61,12 @@ jobs:
             fi
           done
 
+      - name: Checkout openpencil-skill
+        uses: actions/checkout@v4
+        with:
+          repository: zseven-w/openpencil-skill
+          path: ../openpencil-skill
+
       - name: Compile CLI
         run: bun run cli:compile
 
