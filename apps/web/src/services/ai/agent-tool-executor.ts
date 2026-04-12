@@ -643,7 +643,7 @@ export class AgentToolExecutor {
     if (!docStore.getNodeById(args.parent)) {
       return { success: false, error: `Parent not found: ${args.parent}` };
     }
-    docStore.moveNode(args.id, args.parent, args.index);
+    docStore.moveNode(args.id, args.parent, args.index ?? -1);
     return { success: true };
   }
 
