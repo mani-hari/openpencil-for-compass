@@ -1,6 +1,6 @@
 # @zseven-w/pen-core
 
-Core document operations for [OpenPencil](https://github.com/nicepkg/openpencil) — tree manipulation, layout engine, design variables, boolean path operations, and more.
+Core document operations for [OpenPencil](https://github.com/ZSeven-W/openpencil) — tree manipulation, layout engine, design variables, boolean path operations, and more.
 
 ## Install
 

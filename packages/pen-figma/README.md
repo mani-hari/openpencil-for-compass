@@ -1,6 +1,6 @@
 # @zseven-w/pen-figma
 
-Figma `.fig` file parser and converter for [OpenPencil](https://github.com/nicepkg/openpencil). Import Figma designs directly into the OpenPencil document model.
+Figma `.fig` file parser and converter for [OpenPencil](https://github.com/ZSeven-W/openpencil). Import Figma designs directly into the OpenPencil document model.
 
 ## Install
 

@@ -1,6 +1,6 @@
 # @zseven-w/pen-sdk
 
-The umbrella SDK for [OpenPencil](https://github.com/nicepkg/openpencil). One import gives you everything — types, document operations, code generation, Figma import, and rendering.
+The umbrella SDK for [OpenPencil](https://github.com/ZSeven-W/openpencil). One import gives you everything — types, document operations, code generation, Figma import, and rendering.
 
 ## Install
 

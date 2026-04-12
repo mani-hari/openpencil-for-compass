@@ -1,6 +1,6 @@
 # @zseven-w/pen-renderer
 
-Standalone CanvasKit/Skia renderer for [OpenPencil](https://github.com/nicepkg/openpencil) design files. Render `.op` documents to a GPU-accelerated canvas — works in browsers, Node.js, and headless environments.
+Standalone CanvasKit/Skia renderer for [OpenPencil](https://github.com/ZSeven-W/openpencil) design files. Render `.op` documents to a GPU-accelerated canvas — works in browsers, Node.js, and headless environments.
 
 ## Install
 
