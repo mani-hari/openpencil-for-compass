@@ -13,9 +13,11 @@
     }
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^0.18.2"
+    "@agentclientprotocol/sdk": "^0.18.2",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@types/ws": "^8.5.0",
     "typescript": "^5.7.2"
   }
 }

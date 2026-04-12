@@ -1,0 +1,125 @@
+import { spawn, type ChildProcess } from 'node:child_process';
+import { Readable, Writable } from 'node:stream';
+import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
+import type { AcpAgentConfig, AcpAgentInfo, AcpConnectionState } from './types';
+
+/** Establish an ACP connection to a local process or remote endpoint. */
+export async function connectAcpAgent(config: AcpAgentConfig): Promise<AcpConnectionState> {
+  if (config.connectionType === 'local') {
+    return connectLocal(config);
+  }
+  return connectRemote(config);
+}
+
+/**
+ * Create a ClientSideConnection from a bidirectional ndJSON stream.
+ * The Client.sessionUpdate callback dispatches events to
+ * state.sessionUpdateEmitter so the SSE handler can consume them.
+ */
+function createConnection(
+  stream: ReturnType<typeof ndJsonStream>,
+  state: AcpConnectionState,
+): ClientSideConnection {
+  return new ClientSideConnection(
+    (_agent) => ({
+      sessionUpdate: async (params) => {
+        state.sessionUpdateEmitter?.dispatchEvent(new CustomEvent('update', { detail: params }));
+      },
+      requestPermission: async () => ({
+        outcome: { outcome: 'cancelled' as const },
+      }),
+    }),
+    stream,
+  );
+}
+
+async function connectLocal(config: AcpAgentConfig): Promise<AcpConnectionState> {
+  if (!config.command) throw new Error('Local ACP agent requires a command');
+
+  const proc = spawn(config.command, config.args ?? [], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, ...config.env },
+  });
+
+  const input = Writable.toWeb(proc.stdin!);
+  const output = Readable.toWeb(proc.stdout!);
+  const stream = ndJsonStream(input, output);
+
+  const state: AcpConnectionState = {
+    connection: null!,
+    agentInfo: { name: 'unknown' },
+    process: proc,
+    sessionUpdateEmitter: null,
+  };
+  state.connection = createConnection(stream, state);
+
+  const initResult = await state.connection.initialize({
+    protocolVersion: PROTOCOL_VERSION,
+    clientCapabilities: {},
+    clientInfo: { name: 'openpencil', version: '0.7.1' },
+  });
+
+  state.agentInfo = {
+    name: initResult.agentInfo?.name ?? config.displayName,
+    title: initResult.agentInfo?.title,
+    version: initResult.agentInfo?.version,
+  };
+
+  return state;
+}
+
+async function connectRemote(config: AcpAgentConfig): Promise<AcpConnectionState> {
+  if (!config.url) throw new Error('Remote ACP agent requires a URL');
+
+  const { WebSocket: WS } = await import('ws');
+  const ws = new WS(config.url);
+  await new Promise<void>((resolve, reject) => {
+    ws.addEventListener('open', () => resolve());
+    ws.addEventListener('error', (e) => reject(new Error(`WebSocket error: ${e}`)));
+  });
+
+  const readable = new ReadableStream<Uint8Array>({
+    start(controller) {
+      ws.addEventListener('message', (e) => {
+        const data = typeof e.data === 'string' ? e.data : String(e.data);
+        controller.enqueue(new TextEncoder().encode(data + '\n'));
+      });
+      ws.addEventListener('close', () => controller.close());
+    },
+  });
+  const writable = new WritableStream<Uint8Array>({
+    write(chunk) {
+      ws.send(new TextDecoder().decode(chunk));
+    },
+  });
+
+  const stream = ndJsonStream(writable, readable);
+
+  const state: AcpConnectionState = {
+    connection: null!,
+    agentInfo: { name: 'unknown' },
+    sessionUpdateEmitter: null,
+  };
+  state.connection = createConnection(stream, state);
+
+  const initResult = await state.connection.initialize({
+    protocolVersion: PROTOCOL_VERSION,
+    clientCapabilities: {},
+    clientInfo: { name: 'openpencil', version: '0.7.1' },
+  });
+
+  state.agentInfo = {
+    name: initResult.agentInfo?.name ?? config.displayName,
+    title: initResult.agentInfo?.title,
+    version: initResult.agentInfo?.version,
+  };
+
+  return state;
+}
+
+/** Disconnect an ACP connection and kill the process if local. */
+export function disconnectAcpAgent(state: AcpConnectionState): void {
+  if (state.process) {
+    state.process.kill('SIGTERM');
+  }
+}
