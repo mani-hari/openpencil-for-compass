@@ -272,7 +272,7 @@ describe('SkiaInteractionManager continuous interaction commits', () => {
       y: 20,
       width: 120,
       height: 80,
-      fill: [{ type: 'image', src: 'memory://image.png' }],
+      fill: [{ type: 'image', url: 'memory://image.png' }],
     } as PenNode;
 
     useDocumentStore.setState({
