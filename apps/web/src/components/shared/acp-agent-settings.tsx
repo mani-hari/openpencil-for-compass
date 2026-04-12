@@ -230,7 +230,7 @@ export function AcpAgentForm({
             disabled={!canSave}
             className="h-7 px-4 text-[11px] rounded-md"
           >
-            {initial ? t('common.save') : t('acp.add')}
+            {initial ? t('common.save') : t('acp.addAgent')}
           </Button>
         </div>
       </div>
@@ -362,7 +362,7 @@ function AcpAgentCard({ agent }: { agent: AcpAgentConfig }) {
                 ? agentInfo
                   ? `${agentInfo.name}${agentInfo.version ? ` v${agentInfo.version}` : ''}`
                   : t('acp.connected')
-                : t('acp.disconnected')}
+                : t('acp.notConnected')}
             </span>
           </div>
         </div>
