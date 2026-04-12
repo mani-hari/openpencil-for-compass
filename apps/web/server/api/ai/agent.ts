@@ -84,7 +84,12 @@ const ROLE_SKILL_PHASE: Record<string, Phase> = {
 const ROLE_TOOL_INSTRUCTIONS: Record<string, string> = {
   designer: `You are a design team member. When asked to create designs, you MUST call the generate_design tool with a descriptive prompt. You can also use insert_node for manual node creation, batch_get and snapshot_layout to inspect the canvas, and find_empty_space to find placement locations. Always end with a short natural-language summary of what you created or changed. Never stop at tool calls only.`,
   reviewer: `You are a design reviewer. Use batch_get and snapshot_layout to inspect the current canvas state. Use get_selection to see what the user has selected. Provide detailed feedback on layout, spacing, typography, and visual hierarchy. Always end with a short natural-language summary for the lead agent.`,
-  editor: `You are a design editor. Use batch_get and snapshot_layout to understand the current canvas. Use update_node to modify node properties, delete_node to remove elements, and insert_node to add new elements. Use find_empty_space to find placement locations. Always end with a short natural-language summary of what changed. Never stop at tool calls only.`,
+  editor: `You are a design editor. ALWAYS start by calling batch_get or snapshot_layout to understand the current canvas state before making changes. Match your action to user intent:
+- To READ/INSPECT: use batch_get (search nodes) or snapshot_layout (spatial overview)
+- To DELETE/REMOVE: use batch_get to find the node ID, then delete_node to remove it — do NOT create new nodes
+- To MODIFY: use update_node to change properties of existing nodes
+- To ADD: use insert_node to add new elements, find_empty_space for placement
+Always end with a short natural-language summary of what changed. Never stop at tool calls only.`,
   researcher: `You are a design researcher. Use batch_get and snapshot_layout to analyze the current canvas state. Use find_empty_space to identify available space. Use get_selection to see what the user has selected. Provide analysis and recommendations. Always end with a short natural-language summary for the lead agent.`,
 };
 
