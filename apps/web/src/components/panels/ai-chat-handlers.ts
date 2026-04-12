@@ -147,7 +147,7 @@ async function* parseAgentSSE(
 
 /** Provider config for the agent pipeline */
 interface AgentProviderConfig {
-  providerType: 'anthropic' | 'openai-compat';
+  providerType: 'anthropic' | 'openai-compat' | 'acp';
   apiKey: string;
   model: string;
   baseURL?: string;
@@ -245,6 +245,12 @@ async function runAgentStream(
     ...(designMdContent ? { designMdContent } : {}),
     ...(hasVariables ? { hasVariables } : {}),
   };
+
+  // ACP: add agentId to the request body
+  if (providerConfig.providerType === 'acp') {
+    const agentId = providerConfig.model.slice(4);
+    (agentBody as any).acpAgentId = agentId;
+  }
 
   const response = await fetch('/api/ai/agent', {
     method: 'POST',
@@ -561,6 +567,52 @@ export function useChatHandlers() {
           }
           return { messages: msgs };
         });
+        return;
+      }
+
+      // -----------------------------------------------------------------------
+      // ACP AGENT MODE — routes to ACP agent via runAgentStream()
+      // -----------------------------------------------------------------------
+      if (model.startsWith('acp:')) {
+        const agentId = model.slice(4);
+        const { acpAgents } = useAgentSettingsStore.getState();
+        const acpConfig = acpAgents.find((a: any) => a.id === agentId);
+        if (!acpConfig) {
+          useAIStore.setState((s) => {
+            const msgs = [...s.messages];
+            const last = msgs[msgs.length - 1];
+            if (last) {
+              last.content = 'ACP agent not found. Please check your settings.';
+              last.isStreaming = false;
+            }
+            return { messages: msgs };
+          });
+          return;
+        }
+
+        useAIStore.getState().clearToolCallBlocks();
+        try {
+          await runAgentStream(
+            assistantMsg.id,
+            {
+              providerType: 'acp',
+              apiKey: 'acp',
+              model: model,
+            },
+            abortController,
+          );
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          useAIStore.setState((s) => {
+            const msgs = [...s.messages];
+            const last = msgs[msgs.length - 1];
+            if (last) {
+              last.content += `\n\n**Error:** ${errorMsg}`;
+              last.isStreaming = false;
+            }
+            return { messages: msgs };
+          });
+        }
         return;
       }
 
