@@ -1,7 +1,7 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { Readable, Writable } from 'node:stream';
 import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
-import type { AcpAgentConfig, AcpAgentInfo, AcpConnectionState } from './types';
+import type { AcpAgentConfig, AcpConnectionState } from './types';
 
 /** Establish an ACP connection to a local process or remote endpoint. */
 export async function connectAcpAgent(config: AcpAgentConfig): Promise<AcpConnectionState> {
