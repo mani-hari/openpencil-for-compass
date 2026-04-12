@@ -405,6 +405,14 @@ export default defineEventHandler(async (event) => {
       const toolName = session.toolNames.get(body.toolCallId);
       updateLayoutSessionState(session, toolName, body.result);
 
+      // ACP sessions: tools are executed by the agent via MCP, not client-side.
+      // Just acknowledge the result and return.
+      if (session.type === 'acp') {
+        session.lastActivity = Date.now();
+        session.toolNames.delete(body.toolCallId);
+        return { ok: true };
+      }
+
       const resultJson = JSON.stringify(body.result);
       // Per-toolCallId routing: check if this tool belongs to a member
       const memberId = session.toolOwners?.get(body.toolCallId);
