@@ -27,6 +27,7 @@ import {
   cleanup,
   abortSession,
   createSession,
+  createAcpSession,
   touchSession,
   type AgentSession,
   type NativeAgentSession,
@@ -42,6 +43,9 @@ import {
   requireOpenAICompatBaseURL,
 } from './provider-url';
 import { startSSEKeepAlive } from '../../utils/sse-keepalive';
+import { getAcpConnection } from '../../utils/acp-connection-manager';
+import { getMcpServerStatus } from '../../utils/mcp-server-manager';
+import { acpUpdateToSSE } from '@zseven-w/pen-acp';
 
 const TOOL_LEVEL_MAP: Record<string, AuthLevel> = {
   batch_get: 'read',
@@ -171,7 +175,7 @@ interface AgentBody {
   sessionId: string;
   messages: Array<{ role: string; content: string }>;
   systemPrompt: string;
-  providerType: 'anthropic' | 'openai-compat';
+  providerType: 'anthropic' | 'openai-compat' | 'acp';
   apiKey: string;
   model: string;
   baseURL?: string;
@@ -184,6 +188,7 @@ interface AgentBody {
   concurrency?: number;
   designMdContent?: string;
   hasVariables?: boolean;
+  acpAgentId?: string;
 }
 
 /** Map Zig event JSON to client SSE format.
@@ -451,6 +456,101 @@ export default defineEventHandler(async (event) => {
 
   // ── Start agent loop (SSE stream) ──────────────────────────
   const body = await readBody<AgentBody>(event);
+
+  // ── ACP Agent path ──────────────────────────────────────────
+  if (body?.providerType === 'acp' && body.acpAgentId) {
+    const conn = getAcpConnection(body.acpAgentId as string);
+    if (!conn) {
+      throw createError({ statusCode: 400, message: 'ACP agent not connected' });
+    }
+
+    // Create ACP session, pass MCP server so agent can execute tools directly
+    const mcpStatus = getMcpServerStatus();
+    const mcpServers =
+      mcpStatus.running && mcpStatus.port
+        ? [
+            {
+              name: 'openpencil',
+              url: `http://localhost:${mcpStatus.port}/mcp`,
+              transport: 'http' as const,
+            },
+          ]
+        : [];
+    const { sessionId: acpSessionId } = await conn.connection.newSession({
+      cwd: process.cwd(),
+      mcpServers,
+    });
+
+    const clientSessionId = body.sessionId as string;
+    agentSessions.set(
+      clientSessionId,
+      createAcpSession({
+        acpSessionId,
+        acpAgentId: body.acpAgentId as string,
+        connection: conn.connection,
+      }),
+    );
+
+    // Build prompt from last user message
+    const lastMsg = ((body.messages as any[]) ?? []).at(-1);
+    const promptText =
+      typeof lastMsg?.content === 'string'
+        ? lastMsg.content
+        : JSON.stringify(lastMsg?.content ?? '');
+
+    // Wire session/update notifications into SSE stream
+    const updateTarget = new EventTarget();
+    conn.sessionUpdateEmitter = updateTarget;
+
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        const onUpdate = (e: Event) => {
+          const notification = (e as CustomEvent).detail;
+          const sse = acpUpdateToSSE(notification);
+          if (sse) controller.enqueue(encoder.encode(sse));
+        };
+        updateTarget.addEventListener('update', onUpdate);
+
+        try {
+          await conn.connection.prompt({
+            sessionId: acpSessionId,
+            prompt: [{ type: 'text', text: promptText }],
+          });
+
+          controller.enqueue(
+            encoder.encode(
+              `event: done\ndata: ${JSON.stringify({ type: 'done', totalTurns: 1 })}\n\n`,
+            ),
+          );
+        } catch (err) {
+          controller.enqueue(
+            encoder.encode(
+              `event: error\ndata: ${JSON.stringify({
+                type: 'error',
+                message: `ACP error: ${err instanceof Error ? err.message : String(err)}`,
+                fatal: true,
+              })}\n\n`,
+            ),
+          );
+        } finally {
+          updateTarget.removeEventListener('update', onUpdate);
+          conn.sessionUpdateEmitter = null;
+          agentSessions.delete(clientSessionId);
+          controller.close();
+        }
+      },
+    });
+
+    setResponseHeaders(event, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+
+    return new Response(stream);
+  }
+
   if (
     !body?.sessionId ||
     !body.messages ||
@@ -602,8 +702,9 @@ export default defineEventHandler(async (event) => {
     }
   });
 
+  // providerType is narrowed: 'acp' returned early above
   const provider = createProviderHandle(
-    body.providerType,
+    body.providerType as 'anthropic' | 'openai-compat',
     body.apiKey,
     body.model,
     normalizedBaseURL,
@@ -791,7 +892,7 @@ export default defineEventHandler(async (event) => {
 
                 // Create provider (use member model or lead's)
                 const mProvider = createProviderHandle(
-                  body.providerType,
+                  body.providerType as 'anthropic' | 'openai-compat',
                   body.apiKey,
                   memberModel ?? body.model,
                   normalizedBaseURL,
