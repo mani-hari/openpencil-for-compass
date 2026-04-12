@@ -29,6 +29,7 @@ import {
   createSession,
   touchSession,
   type AgentSession,
+  type NativeAgentSession,
 } from '../../utils/agent-sessions';
 import {
   shouldShortCircuitPlanLayout,
@@ -273,9 +274,10 @@ function zigEventToSSE(raw: string): string {
   return `event: ${mapped.type}\ndata: ${JSON.stringify(mapped)}\n\n`;
 }
 
-/** Run a delegated member asynchronously — does NOT block the caller. */
+/** Run a delegated member asynchronously — does NOT block the caller.
+ *  Only called for native agent sessions (team mode). */
 async function runDelegateMember(
-  session: AgentSession,
+  session: NativeAgentSession,
   body: AgentBody,
   controller: ReadableStreamDefaultController,
   encoder: TextEncoder,
