@@ -41,6 +41,7 @@ import type { ToolCallBlockData } from '@/components/panels/tool-call-block';
 import { CHAT_STREAM_THINKING_CONFIG } from '@/services/ai/ai-runtime-config';
 import { classifyIntent } from './ai-chat-intent-classifier';
 import { buildContextString } from './ai-chat-context-builder';
+import { detectAgentIntent, getCrudToolDefs } from '@/services/ai/agent-tools';
 
 // Re-export for any external consumers
 export { buildContextString } from './ai-chat-context-builder';
@@ -74,22 +75,34 @@ RULE 3: Do NOT call generate_design more than once unless the user asks for a ne
 
 FORBIDDEN: Do not output JSON, code blocks, or node definitions directly. Always use generate_design instead.`;
 
+/** Lightweight prompt for CRUD operations — no design skills, just tool usage. */
+const AGENT_TOOL_INSTRUCTIONS_CRUD = `You are a design editor. Use tools to inspect, modify, and delete elements on the canvas.
+
+WORKFLOW:
+1. Use batch_get or snapshot_layout to understand the current canvas and find node IDs.
+2. Use update_node to modify, delete_node to remove, or get_selection to inspect selected elements.
+3. After each operation, write 1-2 sentences summarizing what changed.
+
+Do NOT create new designs or frames. Focus on the specific operation the user requested.`;
+
 /** Agent instructions for lead agents coordinating a team. */
 const AGENT_TOOL_INSTRUCTIONS_TEAM = `You are a design lead coordinating a team.
 
 Do not create the design directly in this mode. Analyze the request, delegate the work to team members, then summarize the outcome for the user.`;
 
 /**
- * Build the agent system prompt based on provider type.
- * Builtin providers get direct design instructions (plan_layout + batch_insert).
- * CLI providers get generate_design tool instructions (orchestrator pipeline).
+ * Build the agent system prompt based on provider type and detected intent.
+ * CRUD intents (read/update/delete) get a lightweight prompt with no design skills.
+ * Design intents get the full design generation pipeline.
  */
 function buildAgentSystemPrompt(
-  _userMessage: string,
+  userMessage: string,
   isBuiltin: boolean,
   teamMode: boolean,
 ): string {
   if (teamMode) return AGENT_TOOL_INSTRUCTIONS_TEAM;
+  const intent = detectAgentIntent(userMessage);
+  if (intent === 'crud') return AGENT_TOOL_INSTRUCTIONS_CRUD;
   return isBuiltin ? AGENT_TOOL_INSTRUCTIONS_BUILTIN : AGENT_TOOL_INSTRUCTIONS_CLI;
 }
 
@@ -204,7 +217,8 @@ async function runAgentStream(
   const { useAIStore: concurrencyStore } = await import('@/stores/ai-store');
   const concurrency = concurrencyStore.getState().concurrency;
   const teamMode = concurrency > 1;
-  const toolDefs = getDesignToolDefs();
+  const intent = detectAgentIntent(lastUserMsg);
+  const toolDefs = intent === 'crud' ? getCrudToolDefs() : getDesignToolDefs();
   const systemPrompt = buildAgentSystemPrompt(lastUserMsg, isBuiltin, teamMode) + context;
 
   const agentBody: Record<string, unknown> = {
