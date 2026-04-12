@@ -76,14 +76,20 @@ RULE 3: Do NOT call generate_design more than once unless the user asks for a ne
 FORBIDDEN: Do not output JSON, code blocks, or node definitions directly. Always use generate_design instead.`;
 
 /** Lightweight prompt for CRUD operations — no design skills, just tool usage. */
-const AGENT_TOOL_INSTRUCTIONS_CRUD = `You are a design editor. Use tools to inspect, modify, and delete elements on the canvas.
+const AGENT_TOOL_INSTRUCTIONS_CRUD = `You are a design editor. Use tools to inspect, modify, insert, and delete elements on the canvas.
 
 WORKFLOW:
-1. Use batch_get or snapshot_layout to understand the current canvas and find node IDs.
-2. Use update_node to modify, delete_node to remove, or get_selection to inspect selected elements.
-3. After each operation, write 1-2 sentences summarizing what changed.
+1. Use snapshot_layout or batch_get FIRST to see the tree structure and find node IDs.
+2. Use the appropriate tool: insert_node to add, update_node to modify, delete_node to remove, move_node to reparent.
+3. When inserting, use "after" parameter with a sibling ID to place the new node in the correct position.
+4. After each operation, write 1-2 sentences summarizing what changed.
 
-Do NOT create new designs or frames. Focus on the specific operation the user requested.`;
+INSERT_NODE GUIDE — always include complete node data with children:
+- Button example: {"type":"frame","name":"My Button","width":"fill_container","height":50,"cornerRadius":8,"fill":[{"type":"solid","color":"#1877F2"}],"layout":"horizontal","gap":8,"alignItems":"center","justifyContent":"center","children":[{"type":"icon_font","name":"Icon","iconName":"facebook","width":20,"height":20,"fill":[{"type":"solid","color":"#FFFFFF"}]},{"type":"text","name":"Label","text":"Continue with Facebook","fontSize":15,"fontWeight":600,"fill":[{"type":"solid","color":"#FFFFFF"}]}]}
+- Text example: {"type":"text","name":"Title","text":"Hello","fontSize":24,"fontWeight":700,"fill":[{"type":"solid","color":"#1A1A2E"}]}
+- When adding next to a similar element, use batch_get to read that element's full data first, then create matching structure.
+
+Focus on the specific operation the user requested.`;
 
 /** Agent instructions for lead agents coordinating a team. */
 const AGENT_TOOL_INSTRUCTIONS_TEAM = `You are a design lead coordinating a team.
