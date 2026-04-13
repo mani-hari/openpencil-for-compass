@@ -9,8 +9,9 @@
 
 import { spawn, execSync, type ChildProcess } from 'node:child_process';
 import { build } from 'esbuild';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { Socket } from 'node:net';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { compileSkills } from '../../packages/pen-ai-skills/vite-plugin-skills';
 import { getElectronBinaryPath, getElectronSpawnEnv } from './dev-utils';
@@ -144,13 +145,42 @@ async function main(): Promise<void> {
     vite.kill();
   };
 
+  /** Kill the detached MCP server spawned by Nitro (survives Vite teardown). */
+  const stopMcpServer = () => {
+    const pidFile = join(tmpdir(), 'openpencil-mcp-server.pid');
+    const portFile = join(tmpdir(), 'openpencil-mcp-server.port');
+    try {
+      if (existsSync(pidFile)) {
+        const pid = parseInt(readFileSync(pidFile, 'utf-8').trim(), 10);
+        if (Number.isFinite(pid)) {
+          try {
+            process.kill(pid, 'SIGTERM');
+          } catch {
+            /* already gone */
+          }
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    for (const f of [pidFile, portFile]) {
+      try {
+        unlinkSync(f);
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
   // Ensure cleanup on exit
   const cleanup = () => {
     stopVite();
+    stopMcpServer();
     process.exit();
   };
   process.on('SIGINT', cleanup);
   process.on('SIGTERM', cleanup);
+  process.on('exit', stopMcpServer);
 
   // 2. Wait for Vite to be ready
   console.log(`[electron-dev] Waiting for Vite on port ${VITE_DEV_PORT}...`);

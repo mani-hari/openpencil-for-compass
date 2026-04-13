@@ -53,12 +53,18 @@ const TOOL_AUTH_MAP: Record<string, AuthLevel> = {
 
 export type AgentIntent = 'design' | 'crud';
 
-const DESIGN_KEYWORDS =
-  /\b(设计|创建|生成|画|做一个|新建|增加|添加|加一个|插入|design|create|make|build|generate|add|insert|landing|page|screen|app|dashboard|card|hero|navbar|form|layout)\b/i;
+// CJK characters aren't `\w`, so `\b` boundaries silently fail for them.
+// Keep the English list boundary-anchored (avoids `app` matching `approach`,
+// `add` matching `address`, etc.) and run a separate boundary-free pass for
+// CJK keywords.
+const DESIGN_KEYWORDS_EN =
+  /\b(design|create|make|build|generate|add|insert|landing|page|screen|app|dashboard|card|hero|navbar|form|layout)\b/i;
+const DESIGN_KEYWORDS_CJK =
+  /(设计|创建|生成|画|做一个|新建|增加|添加|加一个|插入|页面|界面|登录|首页|仪表盘|卡片|表单)/;
 
 /** Detect whether the user's message is a design intent or a CRUD operation. */
 export function detectAgentIntent(message: string): AgentIntent {
-  return DESIGN_KEYWORDS.test(message) ? 'design' : 'crud';
+  return DESIGN_KEYWORDS_EN.test(message) || DESIGN_KEYWORDS_CJK.test(message) ? 'design' : 'crud';
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +187,15 @@ export function getCrudToolDefs(): ToolDef[] {
   ];
 }
 
-/** Design tools — full set including generation capabilities. */
+/**
+ * Design tools — minimal set forcing the model through `generate_design`.
+ *
+ * Weak models (e.g. MiniMax-M2.7) prefer per-node `insert_node` calls when
+ * given the choice, producing scattered output instead of a coherent design.
+ * Read tools (`batch_get`, `snapshot_layout`) stay so the model can inspect
+ * existing context before generating. CRUD tools live in `getCrudToolDefs()`
+ * and are reached via `detectAgentIntent('crud')` for surgical edits.
+ */
 export function getDesignToolDefs(): ToolDef[] {
   return [
     {
@@ -215,33 +229,6 @@ export function getDesignToolDefs(): ToolDef[] {
       },
     },
     {
-      name: 'insert_node',
-      description:
-        'Insert a new node into the document tree. Always call snapshot_layout or batch_get first. ' +
-        'Use "after" to insert next to a sibling (auto-finds parent and position), or "parent" for explicit placement.',
-      level: TOOL_AUTH_MAP.insert_node,
-      parameters: {
-        type: 'object',
-        properties: {
-          after: {
-            type: 'string',
-            description:
-              'Insert after this sibling node ID (preferred). Automatically uses the same parent and places the new node right after it.',
-          },
-          parent: {
-            type: ['string', 'null'],
-            description:
-              'Explicit parent node ID. Use "after" instead when adding next to existing elements.',
-          },
-          data: {
-            type: 'object',
-            description: 'PenNode data (type, name, width, height, fills, children, etc.)',
-          },
-        },
-        required: ['data'],
-      },
-    },
-    {
       name: 'generate_design',
       description:
         'Generate a complete design on the canvas. Pass a natural language description. The pipeline handles layout, styling, icons, and rendering. Always use this for creating designs.',
@@ -256,34 +243,6 @@ export function getDesignToolDefs(): ToolDef[] {
           },
         },
         required: ['prompt'],
-      },
-    },
-    {
-      name: 'update_node',
-      description: 'Update properties of an existing node by ID',
-      level: TOOL_AUTH_MAP.update_node,
-      parameters: {
-        type: 'object',
-        properties: {
-          id: { type: 'string', description: 'Node ID to update' },
-          data: { type: 'object', description: 'Properties to update' },
-        },
-        required: ['id', 'data'],
-      },
-    },
-    {
-      name: 'delete_node',
-      description:
-        'Delete a node (and all its children) from the document. ' +
-        'Use when the user asks to remove, delete, or clear elements. ' +
-        'Always call batch_get first to find the correct node ID before deleting.',
-      level: TOOL_AUTH_MAP.delete_node,
-      parameters: {
-        type: 'object',
-        properties: {
-          id: { type: 'string', description: 'Node ID to delete' },
-        },
-        required: ['id'],
       },
     },
   ];

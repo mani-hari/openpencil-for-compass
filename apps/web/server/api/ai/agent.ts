@@ -189,6 +189,7 @@ interface AgentBody {
   designMdContent?: string;
   hasVariables?: boolean;
   acpAgentId?: string;
+  acpConfig?: import('../../../src/types/agent-settings').AcpAgentConfig;
 }
 
 /** Map Zig event JSON to client SSE format.
@@ -250,9 +251,28 @@ function zigEventToSSE(raw: string): string {
       break;
     case 'result':
       if (data.is_error) {
+        const parts: string[] = [`Agent error: ${data.subtype ?? 'unknown'}`];
+        if (data.result) parts.push(String(data.result));
+        // Provider-captured upstream errors (HTTP body from anthropic /
+        // openai_compat). Often a JSON envelope — show the inner message
+        // when we can parse it; otherwise dump the raw body.
+        if (Array.isArray(data.errors)) {
+          for (const raw of data.errors as unknown[]) {
+            const text = typeof raw === 'string' ? raw : JSON.stringify(raw);
+            let pretty = text;
+            try {
+              const obj = JSON.parse(text);
+              const inner = obj?.error?.message ?? obj?.message ?? obj?.error?.type;
+              if (typeof inner === 'string' && inner.length > 0) pretty = inner;
+            } catch {
+              /* not JSON — keep raw */
+            }
+            parts.push(pretty.length > 600 ? pretty.slice(0, 600) + '…' : pretty);
+          }
+        }
         mapped = {
           type: 'error',
-          message: `Agent error: ${data.subtype ?? 'unknown'}${data.result ? ' — ' + data.result : ''}`,
+          message: parts.join(' — '),
           fatal: true,
         };
       } else {
@@ -459,27 +479,105 @@ export default defineEventHandler(async (event) => {
 
   // ── ACP Agent path ──────────────────────────────────────────
   if (body?.providerType === 'acp' && body.acpAgentId) {
-    const conn = getAcpConnection(body.acpAgentId as string);
+    let conn = getAcpConnection(body.acpAgentId as string);
+    // If connection missing (e.g. dev server restart) but we have the config,
+    // attempt to reconnect transparently using the config sent by the client.
+    if (!conn && (body as any).acpConfig) {
+      console.log(`[acp] connection missing, auto-reconnecting ${body.acpAgentId}`);
+      const { connectAcp } = await import('../../utils/acp-connection-manager');
+      const result = await connectAcp(body.acpAgentId as string, (body as any).acpConfig);
+      if (!result.connected) {
+        throw createError({
+          statusCode: 400,
+          message: `ACP agent auto-reconnect failed: ${result.error ?? 'unknown error'}`,
+        });
+      }
+      conn = getAcpConnection(body.acpAgentId as string);
+    }
     if (!conn) {
       throw createError({ statusCode: 400, message: 'ACP agent not connected' });
     }
 
-    // Create ACP session, pass MCP server so agent can execute tools directly
+    // Create ACP session. ACP agents need the OpenPencil MCP server to do
+    // anything useful (without it they just call Terminal/Skill tools that
+    // don't work here). Require it to be running — the user starts it from
+    // the MCP settings tab.
+    // NOTE: claude-agent-acp expects `type: 'http' | 'sse'` (not `transport`).
     const mcpStatus = getMcpServerStatus();
-    const mcpServers =
-      mcpStatus.running && mcpStatus.port
-        ? [
-            {
-              name: 'openpencil',
-              url: `http://localhost:${mcpStatus.port}/mcp`,
-              transport: 'http' as const,
-            },
-          ]
-        : [];
+    if (!mcpStatus.running || !mcpStatus.port) {
+      throw createError({
+        statusCode: 400,
+        message:
+          'MCP server is not running. Open Settings → MCP and click "Start" to enable ACP agents to access OpenPencil design tools.',
+      });
+    }
+    const mcpServers = [
+      {
+        name: 'openpencil',
+        type: 'http' as const,
+        url: `http://127.0.0.1:${mcpStatus.port}/mcp`,
+        headers: [] as Array<{ name: string; value: string }>,
+      },
+    ];
+    console.log(
+      `[acp] newSession mcpServers=${JSON.stringify(mcpServers)} (mcpStatus: running=${mcpStatus.running}, port=${mcpStatus.port})`,
+    );
+    // Override the agent's default system prompt (via _meta) to prevent it
+    // from using the openpencil-skill (which is designed for CLI scenarios
+    // where the agent runs `op` commands in terminals). Inside OpenPencil,
+    // the agent should use MCP tools directly.
+    const acpSystemPrompt = [
+      'You are an AI design assistant integrated inside the OpenPencil vector design tool.',
+      'The user sees a live canvas; your job is to produce polished, visually refined UI designs on it.',
+      'You have direct access to OpenPencil\'s document via the "openpencil" MCP server.',
+      '',
+      '## Tool Usage Rules',
+      '- NEVER use Bash/Terminal to run `op` CLI commands. The CLI is not available here.',
+      '- NEVER use the openpencil-skill or Skill tool. They are for a different context.',
+      '- DO use the `mcp__openpencil__*` tools to operate on the canvas.',
+      '- After finishing, provide a brief one-sentence summary of what was done.',
+      '',
+      '## REQUIRED Workflow for Creating New Designs',
+      'Always follow this three-phase pipeline (it produces higher quality than ad-hoc insert calls):',
+      '',
+      "1. **Load the design guide (ONCE)**: Call `get_design_prompt` to receive OpenPencil's design principles, node schema details, role system, color/typography tokens, and layout patterns. Read it carefully — it defines the canonical shapes and defaults.",
+      '2. **Build skeleton**: Call `design_skeleton` with a high-level description. This creates the structural frames (sections, layout containers) with correct auto-layout.',
+      '3. **Fill content**: Call `design_content` once per section from step 2, adding the concrete children (buttons, inputs, text, icons).',
+      '4. **Refine** (optional): Call `design_refine` on the root to apply final polish (consistent spacing, role-based styling).',
+      '',
+      'Only fall back to `batch_design` or `insert_node` when the user explicitly asks for small/surgical edits rather than a new page.',
+      '',
+      '## Modifying Existing Designs',
+      '- Call `snapshot_layout` first to see the current tree.',
+      '- Use `update_node` for property changes, `move_node` for reparenting, `delete_node` to remove.',
+      '- Prefer one `batch_design` over many individual calls when making multiple related changes.',
+      '',
+      '## Canonical Node Shapes (IMPORTANT)',
+      'The canvas will render nothing useful if you use the wrong `type` or shape. Use these:',
+      '',
+      '- **Frame** (container with layout): `{"type": "frame", "name": "X", "width": 375, "height": 812, "layout": "vertical", "gap": 16, "padding": [24, 24, 24, 24], "fill": [{"type": "solid", "color": "#FFFFFF"}], "children": [...]}`',
+      '- **Text** (field is `content` NOT `text`): `{"type": "text", "name": "Title", "content": "Welcome", "fontSize": 24, "fontWeight": 700, "fill": [{"type": "solid", "color": "#111827"}]}`',
+      '- **Icon** (use `icon_font` NOT `icon`, field is `iconFontName` NOT `iconName`): `{"type": "icon_font", "name": "Lock Icon", "iconFontName": "lock", "width": 20, "height": 20, "fill": [{"type": "solid", "color": "#6B7280"}]}`. Common iconFontName values (Lucide): `mail`, `lock`, `eye`, `eye-off`, `chrome`, `apple`, `message-circle`, `x`, `arrow-right`, `search`, `heart`, `star`, `check`, `plus`, `bell`, `home`, `user`, `settings`.',
+      '- **Rectangle**: `{"type": "rectangle", "width": 100, "height": 100, "cornerRadius": 8, "fill": [{"type": "solid", "color": "#3B82F6"}]}`',
+      '- **Button** (frame + text child): use `"role": "cta-button"` on the frame so role resolution applies standard button styling.',
+      '',
+      '## STRICT JSON Rules',
+      'When emitting node JSON inside tool arguments, produce strictly valid JSON:',
+      '- Every property MUST have BOTH a key and value. NEVER emit `": 50` or `: 50` with no key.',
+      '- Every key MUST be a double-quoted non-empty string.',
+      '- `fill` is ALWAYS an array: `"fill": [{"type": "solid", "color": "#hex"}]`.',
+      '- `stroke` is `{"thickness": 1, "fill": [{"type": "solid", "color": "#hex"}]}`. NEVER `{"thickness": 1, "color": "#hex"}`.',
+      '- NO trailing commas, NO comments, use straight `"` not smart quotes.',
+      '- Layout on frames: `"layout": "vertical" | "horizontal" | "none"`, `"gap": number`, `"padding": [top, right, bottom, left]`, `"alignItems": "start" | "center" | "end"`, `"justifyContent": "start" | "center" | "end" | "space-between"`.',
+      '- Width/height: number OR `"fill_container"` OR `"fit_content"`.',
+      '- Before calling the tool, mentally verify the JSON is valid. Every key has a value; every value has a key.',
+    ].join('\n');
+
     const { sessionId: acpSessionId } = await conn.connection.newSession({
       cwd: process.cwd(),
       mcpServers,
-    });
+      _meta: { systemPrompt: acpSystemPrompt },
+    } as Parameters<typeof conn.connection.newSession>[0]);
 
     const clientSessionId = body.sessionId as string;
     agentSessions.set(
@@ -503,28 +601,51 @@ export default defineEventHandler(async (event) => {
     conn.sessionUpdateEmitter = updateTarget;
 
     const encoder = new TextEncoder();
+    let streamClosed = false;
     const stream = new ReadableStream({
       async start(controller) {
+        const safeEnqueue = (chunk: Uint8Array) => {
+          if (streamClosed) return;
+          try {
+            controller.enqueue(chunk);
+          } catch (err) {
+            // Controller may have closed mid-notification (e.g. client disconnect,
+            // idle timeout). Mark closed and stop enqueuing to avoid noise.
+            streamClosed = true;
+          }
+        };
         const onUpdate = (e: Event) => {
           const notification = (e as CustomEvent).detail;
           const sse = acpUpdateToSSE(notification);
-          if (sse) controller.enqueue(encoder.encode(sse));
+          if (sse) safeEnqueue(encoder.encode(sse));
         };
         updateTarget.addEventListener('update', onUpdate);
 
+        // Keep-alive: prevent Bun's 10s idle timeout from killing the stream
+        // during long MCP tool calls (e.g. snapshot_layout → insert_node chain).
+        const keepAlive = startSSEKeepAlive(
+          () => safeEnqueue(encoder.encode(`: keepalive\n\n`)),
+          5000,
+        );
+
         try {
-          await conn.connection.prompt({
+          console.log(`[acp] prompt() start for ${acpSessionId}`);
+          const promptResult = await conn.connection.prompt({
             sessionId: acpSessionId,
             prompt: [{ type: 'text', text: promptText }],
           });
+          console.log(
+            `[acp] prompt() returned, stopReason=${(promptResult as { stopReason?: string })?.stopReason ?? 'unknown'}, streamClosed=${streamClosed}`,
+          );
 
-          controller.enqueue(
+          safeEnqueue(
             encoder.encode(
               `event: done\ndata: ${JSON.stringify({ type: 'done', totalTurns: 1 })}\n\n`,
             ),
           );
         } catch (err) {
-          controller.enqueue(
+          console.error(`[acp] prompt() threw:`, err);
+          safeEnqueue(
             encoder.encode(
               `event: error\ndata: ${JSON.stringify({
                 type: 'error',
@@ -534,10 +655,19 @@ export default defineEventHandler(async (event) => {
             ),
           );
         } finally {
+          console.log(`[acp] prompt() finally, closing stream`);
+          clearInterval(keepAlive);
           updateTarget.removeEventListener('update', onUpdate);
           conn.sessionUpdateEmitter = null;
           agentSessions.delete(clientSessionId);
-          controller.close();
+          if (!streamClosed) {
+            streamClosed = true;
+            try {
+              controller.close();
+            } catch {
+              /* already closed */
+            }
+          }
         }
       },
     });

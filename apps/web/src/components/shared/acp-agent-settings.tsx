@@ -261,15 +261,21 @@ function AcpAgentCard({ agent }: { agent: AcpAgentConfig }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'connect', agentId: agent.id, config: agent }),
       });
-      if (res.ok) {
-        const data = await res.json();
+      const data = res.ok ? await res.json() : null;
+      if (data?.connected) {
         setStatus(agent.id, {
           isConnected: true,
           agentInfo: data.agentInfo,
         });
+      } else {
+        const msg = data?.error ?? `HTTP ${res.status}`;
+        console.error('[acp] connect failed:', msg);
+        alert(`ACP connect failed: ${msg}`);
+        setStatus(agent.id, { isConnected: false });
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error('[acp] connect error:', err);
+      setStatus(agent.id, { isConnected: false });
     } finally {
       setConnecting(false);
     }

@@ -10,7 +10,7 @@ import type { DropPosition } from './layer-item';
 import LayerContextMenu from './layer-context-menu';
 import PageTabs from '@/components/editor/page-tabs';
 
-const CONTAINER_TYPES = new Set(['frame', 'group', 'ref', 'rectangle']);
+const CONTAINER_TYPES = new Set(['frame', 'group', 'ref']);
 
 const LAYER_MIN_WIDTH = 180;
 const LAYER_MAX_WIDTH = 480;

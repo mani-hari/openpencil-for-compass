@@ -246,10 +246,13 @@ async function runAgentStream(
     ...(hasVariables ? { hasVariables } : {}),
   };
 
-  // ACP: add agentId to the request body
+  // ACP: add agentId + config to the request body (config enables server-side
+  // auto-reconnect if the in-memory connection was lost due to dev server restart).
   if (providerConfig.providerType === 'acp') {
     const agentId = providerConfig.model.slice(4);
+    const acpConfig = useAgentSettingsStore.getState().acpAgents.find((a) => a.id === agentId);
     (agentBody as any).acpAgentId = agentId;
+    if (acpConfig) (agentBody as any).acpConfig = acpConfig;
   }
 
   const response = await fetch('/api/ai/agent', {
@@ -261,7 +264,17 @@ async function runAgentStream(
 
   if (!response.ok || !response.body) {
     const errText = await response.text().catch(() => 'Unknown error');
-    throw new Error(`Agent request failed: ${errText}`);
+    // h3 errors come as JSON: { message, error, status, ... } — extract just the message.
+    let errorMessage = errText;
+    try {
+      const parsed = JSON.parse(errText);
+      if (parsed && typeof parsed === 'object' && typeof parsed.message === 'string') {
+        errorMessage = parsed.message;
+      }
+    } catch {
+      /* not JSON — use raw text */
+    }
+    throw new Error(errorMessage);
   }
 
   const reader = response.body.getReader();
@@ -280,6 +293,10 @@ async function runAgentStream(
   let identityPool: AgentIdentity[] = [];
   let nextIdentityIdx = 0;
   const memberIdentities = new Map<string, AgentIdentity>();
+  // Track the most recent failed tool call so terminal `error_server` events
+  // (which carry no detail from the Zig engine) can surface what actually broke.
+  const toolNames = new Map<string, string>();
+  let lastToolError: { name: string; message: string } | null = null;
 
   try {
     for await (const evt of parseAgentSSE(reader, abortController.signal)) {
@@ -319,6 +336,7 @@ async function runAgentStream(
           // Skip internal team coordination tools — they are resolved by agent-team, not the client
           if (evt.level === 'orchestrate') break;
 
+          toolNames.set(evt.id, evt.name);
           executor
             .execute(evt as Extract<AgentEvent, { type: 'tool_call' }>)
             .then((result) => {
@@ -329,12 +347,19 @@ async function runAgentStream(
                   result: result ?? undefined,
                 });
               }
+              if (result && result.success === false) {
+                lastToolError = {
+                  name: evt.name,
+                  message: String(result.error ?? 'unknown error'),
+                };
+              }
             })
             .catch((err) => {
               useAIStore.getState().updateToolCallBlock(evt.id, {
                 status: 'error',
                 result: { success: false, error: String(err) },
               });
+              lastToolError = { name: evt.name, message: String(err) };
             });
           break;
         }
@@ -345,6 +370,12 @@ async function runAgentStream(
             status: evt.result.success ? 'done' : 'error',
             result: evt.result,
           });
+          if (!evt.result.success) {
+            lastToolError = {
+              name: toolNames.get(evt.id) ?? 'tool',
+              message: String((evt.result as { error?: unknown }).error ?? 'unknown error'),
+            };
+          }
           break;
         }
 
@@ -382,7 +413,15 @@ async function runAgentStream(
         }
 
         case 'error': {
-          accumulated += `\n\n**Error:** ${evt.message}`;
+          // Terminal `Agent error: error_server` events from the Zig engine
+          // carry no detail. Fall back to the last failed tool call so the
+          // user sees the actual cause (e.g. an upstream 529 surfaced via
+          // a tool error, or a runtime exception inside the design pipeline).
+          let detail = '';
+          if (lastToolError && /^Agent error:/i.test(evt.message)) {
+            detail = `\n> Last tool failure (\`${lastToolError.name}\`): ${lastToolError.message}`;
+          }
+          accumulated += `\n\n**Error:** ${evt.message}${detail}`;
           updateLastMessage(accumulated);
           renderer.finish();
           if (evt.fatal) return stripThinkTags(accumulated);
@@ -607,9 +646,21 @@ export function useChatHandlers() {
             const msgs = [...s.messages];
             const last = msgs[msgs.length - 1];
             if (last) {
-              last.content += `\n\n**Error:** ${errorMsg}`;
+              last.content = last.content
+                ? `${last.content}\n\n**Error:** ${errorMsg}`
+                : `**Error:** ${errorMsg}`;
               last.isStreaming = false;
             }
+            return { messages: msgs };
+          });
+        } finally {
+          // Always clear streaming state — both on success and on error.
+          useAIStore.getState().setAbortController(null);
+          setStreaming(false);
+          useAIStore.setState((s) => {
+            const msgs = [...s.messages];
+            const last = msgs[msgs.length - 1];
+            if (last?.isStreaming) last.isStreaming = false;
             return { messages: msgs };
           });
         }

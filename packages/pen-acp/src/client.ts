@@ -25,9 +25,25 @@ function createConnection(
       sessionUpdate: async (params) => {
         state.sessionUpdateEmitter?.dispatchEvent(new CustomEvent('update', { detail: params }));
       },
-      requestPermission: async () => ({
-        outcome: { outcome: 'cancelled' as const },
-      }),
+      // Auto-approve all tool calls. The user already established trust by
+      // connecting this ACP agent in settings. Claude Agent ACP requests
+      // permission before each MCP tool call — if we don't approve, tools
+      // fail with "Tool use aborted".
+      // Future: route through AgentToolExecutor's TOOL_AUTH_MAP if per-call
+      // approval is needed for destructive operations.
+      requestPermission: async (params) => {
+        // Prefer the first allow option if present; fall back to generic allow.
+        const allowOption = params.options?.find(
+          (o) =>
+            o.kind === 'allow_once' || o.kind === 'allow_always' || o.optionId.startsWith('allow'),
+        );
+        return {
+          outcome: {
+            outcome: 'selected' as const,
+            optionId: allowOption?.optionId ?? params.options?.[0]?.optionId ?? 'allow',
+          },
+        };
+      },
     }),
     stream,
   );
