@@ -56,7 +56,17 @@ const config = defineConfig({
       // Elsewhere, keep custom output for Electron/Docker/CLI builds.
       ...(isVercel ? {} : { output: { dir: '../../out/web' } }),
       ...(isElectronBuild ? { preset: 'node-server' } : {}),
-      ...(isVercel ? { preset: 'vercel' } : {}),
+      ...(isVercel
+        ? {
+            preset: 'vercel',
+            // Force Node runtime. Vercel's experimental bun1.x runtime (which
+            // Nitro auto-selects when the build runs under Bun) cold-starts
+            // unreliably for this app and returns 404: NOT_FOUND at the edge.
+            vercel: {
+              functions: { runtime: 'nodejs22.x', maxDuration: 30 },
+            },
+          }
+        : {}),
     }),
     // this is the plugin that enables path aliases
     viteTsConfigPaths({
