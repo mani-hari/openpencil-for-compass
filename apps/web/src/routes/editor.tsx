@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router';
 import EditorLayout from '@/components/editor/editor-layout';
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts';
 import { useBeforeUnload } from '@/hooks/use-before-unload';
+import { useUxcBridge } from '@/hooks/use-uxc-bridge';
 
 export const Route = createFileRoute('/editor')({
   component: EditorPage,
@@ -14,6 +15,7 @@ export const Route = createFileRoute('/editor')({
 function EditorPage() {
   useKeyboardShortcuts();
   useBeforeUnload();
+  useUxcBridge();
 
   return <EditorLayout />;
 }

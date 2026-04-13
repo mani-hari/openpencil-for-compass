@@ -112,6 +112,21 @@ export default function AIChatPanel() {
   const acpConnectionStatus = useAgentSettingsStore((s) => s.acpConnectionStatus);
 
   const { input, setInput, handleSend } = useChatHandlers();
+
+  // Register handleSend with the module-level chat-sender registry so the
+  // UXC bridge (apps/web/src/hooks/use-uxc-bridge.ts) can route incoming
+  // uxc:generate prompts through the exact same submit pipeline as a manual
+  // Enter press in the chat textarea.
+  useEffect(() => {
+    let cleanup: (() => void) | undefined;
+    void import('@/lib/chat-sender-registry').then(({ registerChatSender }) => {
+      cleanup = registerChatSender((text) => handleSend(text));
+    });
+    return () => {
+      cleanup?.();
+    };
+  }, [handleSend]);
+
   const canUseModel = !isLoadingModels && availableModels.length > 0;
   const quickActionsDisabled = !canUseModel || isStreaming;
 
