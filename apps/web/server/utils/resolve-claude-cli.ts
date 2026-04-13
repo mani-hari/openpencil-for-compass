@@ -93,8 +93,13 @@ export function resolveClaudeCli(): string | undefined {
       ]
     : [
         join(homedir(), '.local', 'bin', 'claude'),
+        join(homedir(), '.claude', 'local', 'claude'),
+        join(homedir(), '.bun', 'bin', 'claude'),
+        join(homedir(), '.npm-global', 'bin', 'claude'),
+        join(homedir(), '.volta', 'bin', 'claude'),
         '/usr/local/bin/claude',
         '/opt/homebrew/bin/claude',
+        '/opt/homebrew/opt/claude-code/bin/claude',
       ];
   for (const c of candidates) {
     const exists = c ? existsSync(c) : false;

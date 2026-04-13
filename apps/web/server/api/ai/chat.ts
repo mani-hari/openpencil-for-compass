@@ -122,7 +122,17 @@ function buildClaudeExitHint(rawError: string, debugTail?: string[]): string | u
           '(3) If using a proxy, set NODE_TLS_REJECT_UNAUTHORIZED=0 in env.',
       );
     } else {
-      return undefined;
+      // macOS / Linux: if we have no hint patterns matched, still point the
+      // user at the server log so they can see what the CLI actually said.
+      // Otherwise exit-code-1 is completely opaque.
+      hints.push(
+        'Claude Code subprocess crashed. Check the server log for details: ' +
+          '~/.openpencil/logs/server-YYYY-MM-DD.log (search for "claude"). ' +
+          'Common fixes: (1) Run "claude" in a terminal once to accept the login / config prompts. ' +
+          '(2) Ensure ~/.claude.json exists (touch ~/.claude.json if missing). ' +
+          '(3) Verify "which claude" returns a path — if your claude is under nvm/fnm/volta, ' +
+          'the OpenPencil server may not see it in PATH.',
+      );
     }
   }
 

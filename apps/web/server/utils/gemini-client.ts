@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { resolveGeminiCli } from './resolve-gemini-cli';
+import { serverLog } from './server-logger';
 
 type ThinkingMode = 'adaptive' | 'disabled' | 'enabled';
 type ThinkingEffort = 'low' | 'medium' | 'high' | 'max';
@@ -78,22 +79,27 @@ export async function runGeminiExec(
 
   const prompt = buildPrompt(options.systemPrompt, userPrompt);
 
-  const args = ['-o', 'json', '--approval-mode', 'plan'];
+  // Pass prompt as -p argument, not via stdin. The previous approach of
+  // `-p ' '` (literal space) + prompt piped via stdin caused Gemini CLI to
+  // treat ' ' as the prompt and return an empty response. Prompts up to
+  // ARG_MAX (~1MB on macOS/Linux) fit comfortably as an argument.
+  //
+  // Also: no --approval-mode here. `plan` mode makes the CLI emit a plan
+  // of actions instead of the requested content, which blows up the JSON
+  // parse downstream.
+  const args: string[] = ['-o', 'json'];
+  if (options.model) args.push('-m', options.model);
+  args.push('-p', prompt);
 
-  if (options.model) {
-    args.push('-m', options.model);
-  }
-
-  // Use -p with a minimal marker; full prompt piped via stdin.
-  // Gemini CLI appends -p value after stdin content.
-  args.push('-p', ' ');
+  serverLog.info(
+    `[gemini-exec] invoking ${binPath} model=${options.model ?? 'default'} promptChars=${prompt.length}`,
+  );
 
   try {
     const result = await executeGeminiCommand(
       binPath,
       args,
       options.timeoutMs ?? DEFAULT_GEMINI_TIMEOUT_MS,
-      prompt,
     );
     return result;
   } catch (error) {
@@ -124,26 +130,22 @@ export function streamGeminiExec(
 
   const prompt = buildPrompt(options.systemPrompt, userPrompt);
 
-  const args = ['-o', 'stream-json', '--approval-mode', 'plan'];
+  // Same rationale as runGeminiExec above: prompt as -p argument, no
+  // --approval-mode, no stdin. Stream-json is what the CLI emits in
+  // non-interactive mode when `-o stream-json` is specified.
+  const args: string[] = ['-o', 'stream-json'];
+  if (options.model) args.push('-m', options.model);
+  args.push('-p', prompt);
 
-  if (options.model) {
-    args.push('-m', options.model);
-  }
-
-  // Use -p with minimal marker; full prompt piped via stdin.
-  args.push('-p', ' ');
+  serverLog.info(
+    `[gemini-stream] invoking ${binPath} model=${options.model ?? 'default'} promptChars=${prompt.length}`,
+  );
 
   const child = spawn(binPath, args, {
     env: filterGeminiEnv(process.env as Record<string, string | undefined>),
-    stdio: ['pipe', 'pipe', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe'],
     ...(process.platform === 'win32' && { shell: true }),
   });
-
-  // Pipe prompt via stdin
-  if (child.stdin) {
-    child.stdin.write(prompt);
-    child.stdin.end();
-  }
 
   const timeoutMs = options.timeoutMs ?? DEFAULT_GEMINI_TIMEOUT_MS;
   const timer = setTimeout(() => {
@@ -155,21 +157,31 @@ export function streamGeminiExec(
     content: string;
   }> {
     let buffer = '';
+    let stderrBuffer = '';
+    let totalStdoutChars = 0;
+    let emittedTextChars = 0;
+    let rawStdoutForFallback = '';
 
-    child.stderr?.on('data', () => {
-      /* discard stderr */
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderrBuffer += chunk.toString('utf-8');
     });
 
     try {
       for await (const chunk of child.stdout!) {
-        buffer += chunk.toString('utf-8');
+        const text = chunk.toString('utf-8');
+        totalStdoutChars += text.length;
+        rawStdoutForFallback += text;
+        buffer += text;
         let idx = buffer.indexOf('\n');
         while (idx >= 0) {
           const line = buffer.slice(0, idx).trim();
           buffer = buffer.slice(idx + 1);
           if (line) {
             const event = parseStreamJsonLine(line);
-            if (event) yield event;
+            if (event) {
+              if (event.type === 'text') emittedTextChars += event.content.length;
+              yield event;
+            }
           }
           idx = buffer.indexOf('\n');
         }
@@ -179,7 +191,35 @@ export function streamGeminiExec(
       const tail = buffer.trim();
       if (tail) {
         const event = parseStreamJsonLine(tail);
-        if (event) yield event;
+        if (event) {
+          if (event.type === 'text') emittedTextChars += event.content.length;
+          yield event;
+        }
+      }
+
+      serverLog.info(
+        `[gemini-stream] finished stdoutChars=${totalStdoutChars} emittedTextChars=${emittedTextChars} stderrChars=${stderrBuffer.length}`,
+      );
+      if (stderrBuffer) {
+        serverLog.info(`[gemini-stream] stderr head: ${stderrBuffer.slice(0, 500)}`);
+      }
+
+      // Fallback: if we got output from the CLI but emitted nothing as text
+      // (unknown stream-json shape / older or newer CLI version), try to
+      // recover a response from the raw stdout so the design generator sees
+      // *something* rather than an opaque empty-response error.
+      if (emittedTextChars === 0 && rawStdoutForFallback.trim()) {
+        serverLog.info('[gemini-stream] no text events emitted, attempting raw fallback');
+        const parsed = parseGeminiJsonOutput(rawStdoutForFallback);
+        if (parsed?.response && parsed.response.trim().length > 0) {
+          yield { type: 'text', content: parsed.response };
+        } else if (parsed?.errorMessage) {
+          yield { type: 'error', content: friendlyGeminiApiError(parsed.errorMessage) };
+        } else {
+          // Last-ditch: treat the raw stdout as text so the design parser at
+          // least gets a chance at it.
+          yield { type: 'text', content: rawStdoutForFallback };
+        }
       }
 
       yield { type: 'done', content: '' };
@@ -219,20 +259,13 @@ async function executeGeminiCommand(
   binPath: string,
   args: string[],
   timeoutMs: number,
-  stdinText?: string,
 ): Promise<GeminiCliResult> {
   return await new Promise((resolve, reject) => {
     const child = spawn(binPath, args, {
       env: filterGeminiEnv(process.env as Record<string, string | undefined>),
-      stdio: [stdinText ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
       ...(process.platform === 'win32' && { shell: true }),
     });
-
-    // Pipe prompt via stdin
-    if (stdinText && child.stdin) {
-      child.stdin.write(stdinText);
-      child.stdin.end();
-    }
 
     let stdoutBuffer = '';
     let stderrBuffer = '';
@@ -258,12 +291,24 @@ async function executeGeminiCommand(
     child.on('close', (code) => {
       clearTimeout(timer);
 
+      // Always surface a preview of raw output to the server log so we can
+      // diagnose "empty response" failures without guessing.
+      serverLog.info(
+        `[gemini-exec] exit=${code} stdoutChars=${stdoutBuffer.length} stderrChars=${stderrBuffer.length}`,
+      );
+      if (stdoutBuffer) {
+        serverLog.info(`[gemini-exec] stdout head: ${stdoutBuffer.slice(0, 500)}`);
+      }
+      if (stderrBuffer) {
+        serverLog.info(`[gemini-exec] stderr head: ${stderrBuffer.slice(0, 500)}`);
+      }
+
       // Parse JSON output — Gemini CLI always outputs a JSON object at the end of stdout.
       // Error text / stack traces may appear before it.
       const parsed = parseGeminiJsonOutput(stdoutBuffer);
 
       if (parsed) {
-        if (parsed.response) {
+        if (parsed.response && parsed.response.trim().length > 0) {
           resolve({ text: parsed.response });
           return;
         }
@@ -271,6 +316,10 @@ async function executeGeminiCommand(
           resolve({ error: friendlyGeminiApiError(parsed.errorMessage) });
           return;
         }
+        // JSON was returned but `response` is empty and no errorMessage.
+        // This usually means the model was blocked by a safety filter or
+        // the CLI is in a mode (e.g. --approval-mode plan) that doesn't
+        // produce free-form text. Fall through to raw-stdout fallback.
       }
 
       if (code !== 0) {
@@ -280,8 +329,24 @@ async function executeGeminiCommand(
         return;
       }
 
+      // Fallback: if the CLI exited 0 but the JSON parse didn't yield a
+      // response, surface whatever it did print. This covers "-o json"
+      // output-format changes across CLI versions.
       const raw = stdoutBuffer.trim();
-      resolve(raw ? { text: raw } : { error: 'Gemini returned no output.' });
+      if (!raw) {
+        resolve({ error: 'Gemini returned no output. Check ~/.openpencil/logs/ for details.' });
+        return;
+      }
+      // If stdout looks like JSON with an empty response, report that
+      // specifically so the caller can distinguish from parse errors.
+      if (parsed && parsed.response !== undefined && parsed.response.trim().length === 0) {
+        resolve({
+          error:
+            'Gemini returned an empty text response. This usually means a safety filter or quota issue. See ~/.openpencil/logs/ for raw output.',
+        });
+        return;
+      }
+      resolve({ text: raw });
     });
   });
 }
@@ -385,9 +450,32 @@ function parseStreamJsonLine(
 
   const type = typeof parsed.type === 'string' ? parsed.type : '';
 
+  // Gemini CLI v0.1.x: {"type":"message","role":"assistant","content":"..."}
   if (type === 'message' && parsed.role === 'assistant') {
     const content = typeof parsed.content === 'string' ? parsed.content : '';
     if (content) return { type: 'text', content };
+  }
+
+  // Gemini CLI v0.2.x+: {"type":"content","content":"..."} for streaming deltas
+  if (type === 'content') {
+    const content = typeof parsed.content === 'string' ? parsed.content : '';
+    if (content) return { type: 'text', content };
+  }
+
+  // Some builds emit {"type":"text","text":"..."}
+  if (type === 'text') {
+    const content =
+      typeof parsed.text === 'string'
+        ? parsed.text
+        : typeof parsed.content === 'string'
+          ? parsed.content
+          : '';
+    if (content) return { type: 'text', content };
+  }
+
+  // Some builds emit a single {"response":"..."} per line
+  if (typeof parsed.response === 'string' && parsed.response.length > 0) {
+    return { type: 'text', content: parsed.response };
   }
 
   if (type === 'result') {
@@ -396,6 +484,10 @@ function parseStreamJsonLine(
       const errObj = parsed.error as Record<string, unknown>;
       const msg = typeof errObj.message === 'string' ? errObj.message : 'Unknown error';
       return { type: 'error', content: friendlyGeminiApiError(msg) };
+    }
+    // Successful result with embedded response field (newer CLI versions).
+    if (typeof parsed.response === 'string' && parsed.response.length > 0) {
+      return { type: 'text', content: parsed.response };
     }
     return null;
   }
