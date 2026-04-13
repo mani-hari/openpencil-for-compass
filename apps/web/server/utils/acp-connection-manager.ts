@@ -1,6 +1,6 @@
 import { connectAcpAgent, disconnectAcpAgent } from '@zseven-w/pen-acp';
 import type { AcpConnectionState, AcpConnectResult } from '@zseven-w/pen-acp';
-import type { AcpAgentConfig } from '../../../src/types/agent-settings';
+import type { AcpAgentConfig } from '../../src/types/agent-settings';
 
 // Use globalThis so connections survive Vite HMR / Nitro module reloads.
 // Without this, re-evaluating this module wipes the Map and existing UI

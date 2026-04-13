@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { nanoid } from 'nanoid';
 import i18n from '@/i18n';
 import type { AgentEvent } from '@/types/agent';
+import type { AIProviderType } from '@/types/agent-settings';
 
 function decodeAgentEvent(raw: string): AgentEvent | null {
   const eventMatch = raw.match(/^event:\s*(\S+)/);
@@ -719,7 +720,7 @@ export function useChatHandlers() {
                 themes: modDoc.themes,
                 designMd: useDesignMdStore.getState().designMd,
                 model,
-                provider: currentProvider,
+                provider: currentProvider as AIProviderType | undefined,
               },
               abortController.signal,
             );
@@ -735,7 +736,7 @@ export function useChatHandlers() {
               {
                 prompt: fullUserMessage,
                 model,
-                provider: currentProvider,
+                provider: currentProvider as AIProviderType | undefined,
                 concurrency,
                 context: {
                   canvasSize: { width: 1200, height: 800 },

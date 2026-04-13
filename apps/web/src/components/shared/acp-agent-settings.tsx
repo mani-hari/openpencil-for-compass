@@ -25,7 +25,9 @@ const inputClass =
 
 /** Check whether we are running inside the Electron shell */
 function isElectron(): boolean {
-  return typeof window !== 'undefined' && !!(window as Record<string, unknown>).electronAPI;
+  return (
+    typeof window !== 'undefined' && !!(window as unknown as Record<string, unknown>).electronAPI
+  );
 }
 
 /** Parse KEY=VALUE lines into a record */

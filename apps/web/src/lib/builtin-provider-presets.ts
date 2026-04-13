@@ -367,9 +367,10 @@ export function canonicalizeBuiltinProviderConfig(
   // alt URL (e.g. zhipu vs glm-coding both point at /api/anthropic). When
   // the explicit preset is genuinely stale (URL no longer fits the family),
   // fall back to URL-based lookup so legacy entries can self-heal.
+  // Note: config.preset === 'custom' is already handled by the early return above,
+  // so config.preset here is non-custom (or undefined).
   const preset =
     config.preset &&
-    config.preset !== 'custom' &&
     BUILTIN_PROVIDER_PRESETS[config.preset] &&
     presetMatchesURL(config.preset, normalizedURL)
       ? config.preset

@@ -57,8 +57,11 @@ async function connectLocal(config: AcpAgentConfig): Promise<AcpConnectionState>
     env: { ...process.env, ...config.env },
   });
 
-  const input = Writable.toWeb(proc.stdin!);
-  const output = Readable.toWeb(proc.stdout!);
+  // node:stream toWeb returns ReadableStream<any>; ndJsonStream expects
+  // ReadableStream<Uint8Array>. The runtime data is bytes, so the cast is
+  // safe — only TypeScript's variance is too strict here.
+  const input = Writable.toWeb(proc.stdin!) as WritableStream<Uint8Array>;
+  const output = Readable.toWeb(proc.stdout!) as ReadableStream<Uint8Array>;
   const stream = ndJsonStream(input, output);
 
   const state: AcpConnectionState = {
@@ -77,8 +80,8 @@ async function connectLocal(config: AcpAgentConfig): Promise<AcpConnectionState>
 
   state.agentInfo = {
     name: initResult.agentInfo?.name ?? config.displayName,
-    title: initResult.agentInfo?.title,
-    version: initResult.agentInfo?.version,
+    title: initResult.agentInfo?.title ?? undefined,
+    version: initResult.agentInfo?.version ?? undefined,
   };
 
   return state;
@@ -126,8 +129,8 @@ async function connectRemote(config: AcpAgentConfig): Promise<AcpConnectionState
 
   state.agentInfo = {
     name: initResult.agentInfo?.name ?? config.displayName,
-    title: initResult.agentInfo?.title,
-    version: initResult.agentInfo?.version,
+    title: initResult.agentInfo?.title ?? undefined,
+    version: initResult.agentInfo?.version ?? undefined,
   };
 
   return state;

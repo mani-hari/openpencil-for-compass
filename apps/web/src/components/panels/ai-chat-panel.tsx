@@ -14,7 +14,7 @@ import { Button } from '@/components/ui/button';
 import { useAIStore } from '@/stores/ai-store';
 import type { PanelCorner } from '@/stores/ai-store';
 import { useAgentSettingsStore } from '@/stores/agent-settings-store';
-import type { AIProviderType } from '@/types/agent-settings';
+import type { AIProviderType, ModelGroup } from '@/types/agent-settings';
 import { useChatHandlers } from './ai-chat-handlers';
 import { resolveNextModel } from './ai-chat-model-selector';
 import { AIChatMessageList } from './ai-chat-message-list';
@@ -139,7 +139,7 @@ export default function AIChatPanel() {
       (p) => providers[p].isConnected && (providers[p].models?.length ?? 0) > 0,
     );
 
-    const groups = connectedProviders.map((p) => ({
+    const groups: ModelGroup[] = connectedProviders.map((p) => ({
       provider: p,
       providerName: providerNames[p],
       models: providers[p].models,
