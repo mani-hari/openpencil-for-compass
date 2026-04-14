@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { loadCanvasKit } from './skia-init';
 import { SkiaEngine } from './skia-engine';
+import { useAIStore } from '@/stores/ai-store';
 import { useCanvasStore } from '@/stores/canvas-store';
 import { useDocumentStore } from '@/stores/document-store';
+import { AIGenerationOverlay } from '@/components/editor/ai-generation-overlay';
 import { setSkiaEngineRef } from '../skia-engine-ref';
 import type { PathNode, PenNode, PenPathPointType } from '@/types/pen';
 import {
@@ -204,9 +206,12 @@ export default function SkiaCanvas() {
     return manager.attach();
   }, []);
 
+  const aiStreaming = useAIStore((s) => s.isStreaming);
+
   return (
     <div ref={containerRef} className="flex-1 relative overflow-hidden bg-muted">
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
+      {aiStreaming && <AIGenerationOverlay />}
       {editingText && (
         <textarea
           autoFocus

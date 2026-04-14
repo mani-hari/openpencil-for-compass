@@ -165,10 +165,16 @@ function buildAgentEmptyOutputFallback({
   sawThinking,
   sawToolActivity,
   sawMemberActivity,
+  eventCount,
+  providerType,
+  model,
 }: {
   sawThinking: boolean;
   sawToolActivity: boolean;
   sawMemberActivity: boolean;
+  eventCount: number;
+  providerType?: string;
+  model?: string;
 }): string {
   if (sawToolActivity) {
     return '*Completed, but the agent returned no final summary. The requested action may still have been applied.*';
@@ -182,7 +188,25 @@ function buildAgentEmptyOutputFallback({
     return '*The agent finished without a final answer. Please retry if you need a written response.*';
   }
 
-  return '*The agent finished without producing a visible response. Please retry.*';
+  // Zero content: this usually means the provider returned 200 OK with empty
+  // content blocks (rate-limit, safety block, bad tool schema) OR the Zig
+  // engine terminated before issuing the request. Include diagnostic info so
+  // the user can tell which case it is.
+  const diag: string[] = [];
+  if (providerType) diag.push(`provider=${providerType}`);
+  if (model) diag.push(`model=${model}`);
+  diag.push(`events=${eventCount}`);
+  const diagLine = diag.join(', ');
+
+  return [
+    '*The agent finished without producing any text, tool calls, or thinking.*',
+    '',
+    `_Diagnostics: ${diagLine}_`,
+    '',
+    eventCount === 0
+      ? 'The provider returned no events. Check your API key, rate limits, and that the selected model supports tool use. Try switching to a different model or disabling team mode.'
+      : 'The provider returned events but no visible content. This can happen when the model hits a safety filter or returns an empty completion. Retrying usually works; if it persists, try a different prompt or model.',
+  ].join('\n');
 }
 
 /**
@@ -284,6 +308,7 @@ async function runAgentStream(
   let sawThinking = false;
   let sawToolActivity = false;
   let sawMemberActivity = false;
+  let eventCount = 0;
   const [defaultIdentity] = assignAgentIdentities(1);
   const renderer = new StreamingDesignRenderer({
     agentColor: defaultIdentity.color,
@@ -301,6 +326,7 @@ async function runAgentStream(
 
   try {
     for await (const evt of parseAgentSSE(reader, abortController.signal)) {
+      eventCount++;
       switch (evt.type) {
         case 'thinking': {
           sawThinking = true;
@@ -389,6 +415,9 @@ async function runAgentStream(
               sawThinking,
               sawToolActivity,
               sawMemberActivity,
+              eventCount,
+              providerType: providerConfig.providerType,
+              model: providerConfig.model,
             });
             // Preserve thinking steps in the final message
             const prefix = thinkingContent
@@ -533,9 +562,11 @@ export function useChatHandlers() {
       // For builtin models, force provider to 'builtin' — modelGroups may
       // report 'anthropic' based on the upstream API type, but streamChat/
       // orchestrator need 'builtin' to route through the correct server path.
-      const currentProvider = useAIStore
-        .getState()
-        .modelGroups.find((g) => g.models.some((m) => m.value === model))?.provider;
+      const currentProvider = model.startsWith('builtin:')
+        ? 'builtin'
+        : useAIStore
+            .getState()
+            .modelGroups.find((g) => g.models.some((m) => m.value === model))?.provider;
 
       const abortController = new AbortController();
       useAIStore.getState().setAbortController(abortController);
@@ -543,14 +574,21 @@ export function useChatHandlers() {
       let accumulated = '';
 
       // -----------------------------------------------------------------------
-      // BUILT-IN PROVIDER (Agent) MODE — uses Zig engine via runAgentStream()
-      // Rendering is consistent with orchestrator path via shared
-      // StreamingDesignRenderer (breathing glow, animation, cleanup).
+      // BUILT-IN PROVIDER MODE
+      //
+      // Two routes:
+      //   (a) Team mode (concurrency > 1) → runAgentStream() with Zig engine
+      //       for multi-member parallel generation.
+      //   (b) Default (concurrency === 1) → direct generateDesign()/streamChat
+      //       path, same as external providers. This bypasses the agent
+      //       tool-calling dance — which is where "agent finished without
+      //       producing a visible response" fires when Anthropic/Gemini
+      //       return empty content blocks. The direct path streams node JSON
+      //       straight from the model and renders it live on the canvas.
       // -----------------------------------------------------------------------
       if (model.startsWith('builtin:')) {
         const parts = model.split(':');
         const builtinProviderId = parts[1];
-        const modelName = parts.slice(2).join(':');
 
         const { builtinProviders } = useAgentSettingsStore.getState();
         const bp = builtinProviders.find((p) => p.id === builtinProviderId);
@@ -573,41 +611,50 @@ export function useChatHandlers() {
           return;
         }
 
-        useAIStore.getState().clearToolCallBlocks();
-        try {
-          const result = await runAgentStream(
-            assistantMsg.id,
-            {
-              providerType: bp.type === 'anthropic' ? 'anthropic' : 'openai-compat',
-              apiKey: bp.apiKey,
-              model: modelName,
-              baseURL: bp.baseURL,
-              maxContextTokens: bp.maxContextTokens,
-            },
-            abortController,
-          );
-          if (result) accumulated = result;
-        } catch (error) {
-          if (!abortController.signal.aborted) {
-            const errMsg = error instanceof Error ? error.message : 'Unknown error';
-            accumulated += `\n\n**Error:** ${errMsg}`;
-            updateLastMessage(accumulated);
+        // Team mode requested → keep the Zig agent pipeline.
+        const builtinConcurrency = useAIStore.getState().concurrency;
+        if (builtinConcurrency > 1) {
+          const modelName = parts.slice(2).join(':');
+          useAIStore.getState().clearToolCallBlocks();
+          try {
+            const result = await runAgentStream(
+              assistantMsg.id,
+              {
+                providerType: bp.type === 'anthropic' ? 'anthropic' : 'openai-compat',
+                apiKey: bp.apiKey,
+                model: modelName,
+                baseURL: bp.baseURL,
+                maxContextTokens: bp.maxContextTokens,
+              },
+              abortController,
+            );
+            if (result) accumulated = result;
+          } catch (error) {
+            if (!abortController.signal.aborted) {
+              const errMsg = error instanceof Error ? error.message : 'Unknown error';
+              accumulated += `\n\n**Error:** ${errMsg}`;
+              updateLastMessage(accumulated);
+            }
+          } finally {
+            useAIStore.getState().setAbortController(null);
+            setStreaming(false);
           }
-        } finally {
-          useAIStore.getState().setAbortController(null);
-          setStreaming(false);
+
+          useAIStore.setState((s) => {
+            const msgs = [...s.messages];
+            const last = msgs.find((m) => m.id === assistantMsg.id);
+            if (last) {
+              last.content = accumulated;
+              last.isStreaming = false;
+            }
+            return { messages: msgs };
+          });
+          return;
         }
 
-        useAIStore.setState((s) => {
-          const msgs = [...s.messages];
-          const last = msgs.find((m) => m.id === assistantMsg.id);
-          if (last) {
-            last.content = accumulated;
-            last.isStreaming = false;
-          }
-          return { messages: msgs };
-        });
-        return;
+        // Default: fall through to the shared design / chat pipeline with
+        // provider = 'builtin'. This goes through /api/ai/chat which resolves
+        // the builtin API key server-side (see ai-service.ts builtinFields).
       }
 
       // -----------------------------------------------------------------------

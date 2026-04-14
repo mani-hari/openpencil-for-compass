@@ -270,6 +270,14 @@ export function estimateTextHeight(node: PenNode, availableWidth?: number): numb
     if (typeof w === 'number' && w > 0) textWidth = w;
     else if (w === 'fill' && availableWidth && availableWidth > 0) textWidth = availableWidth;
   }
+  // Text node with no explicit width inside a layout container: use the
+  // parent's available width for wrapping. Without this, a horizontal-layout
+  // frame that squeezes the text node down to its minimum width renders each
+  // character on its own line (the `textWidth === 0` branch below counts
+  // only explicit newlines and misses the real wrap boundary).
+  if (textWidth <= 0 && availableWidth && availableWidth > 0) {
+    textWidth = availableWidth;
+  }
 
   // If no width constraint is known, still count explicit newlines
   if (textWidth <= 0) {

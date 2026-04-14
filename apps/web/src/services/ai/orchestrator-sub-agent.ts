@@ -237,6 +237,10 @@ async function executeSubAgent(
   const progressEntry = progress.subtasks[index];
   progressEntry.status = 'streaming';
   emitProgress(plan, progress, callbacks);
+  const subAgentStart = performance.now();
+  console.info(
+    `[sub-agent] begin id=${subtask.id} label="${subtask.label}" screen=${subtask.screen ?? 'default'}`,
+  );
 
   // Context hint is set once at orchestrator level (combining all subtask labels)
   // to avoid race conditions during concurrent execution
@@ -267,8 +271,16 @@ async function executeSubAgent(
       noStyleGuideMatch: !plan.selectedStyleGuideContent && !designMd,
     },
     dynamicContent: designMd ? { designMdContent: JSON.stringify(designMd) } : undefined,
+    // Sub-agents only produce a single section — they don't need the full 8000
+    // token generation budget the default allocates. Tightening this saves
+    // ~10–30% system-prompt size per sub-agent call, which adds up across
+    // sequential-within-screen execution (the main latency bottleneck).
     budgetOverride:
-      modelProfile.tier === 'basic' ? 5200 : modelProfile.tier === 'standard' ? 6500 : undefined,
+      modelProfile.tier === 'basic'
+        ? 4800
+        : modelProfile.tier === 'standard'
+          ? 6000
+          : 7000 /* 'full' tier trimmed from 8000 default */,
   });
 
   // Debug-flag bisection for the cross-provider empty-response bug.
@@ -409,12 +421,20 @@ async function executeSubAgent(
     // subtask finishes quickly (e.g. model outputs everything in one chunk).
     renderer.finish(1500);
     emitProgress(plan, progress, callbacks);
+    const elapsedMs = Math.round(performance.now() - subAgentStart);
+    console.info(
+      `[sub-agent] done id=${subtask.id} elapsedMs=${elapsedMs} nodes=${renderer.getInsertedNodes().length}`,
+    );
     return { subtaskId: subtask.id, nodes: renderer.getInsertedNodes(), rawResponse };
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error';
     progressEntry.status = 'error';
     renderer.finish(1500);
     emitProgress(plan, progress, callbacks);
+    const elapsedMs = Math.round(performance.now() - subAgentStart);
+    console.warn(
+      `[sub-agent] error id=${subtask.id} elapsedMs=${elapsedMs} msg="${msg.slice(0, 120)}"`,
+    );
     return { subtaskId: subtask.id, nodes: renderer.getInsertedNodes(), rawResponse, error: msg };
   }
 }

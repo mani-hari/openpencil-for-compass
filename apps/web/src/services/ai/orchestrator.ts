@@ -503,6 +503,15 @@ export async function executeOrchestration(
   const animated = callbacks?.animated ?? false;
   const preparedPrompt = prepareDesignPrompt(request.prompt);
 
+  // Per-phase timing telemetry. Logged to console so the user can see where
+  // time is being spent in long runs (especially the 5–15 min single-screen
+  // case where the bottleneck is within-screen sequential sub-agents).
+  const orchStart = performance.now();
+  const phaseDuration = (start: number) => Math.round(performance.now() - start);
+  console.info(
+    `[orchestrator] begin prompt="${request.prompt.slice(0, 80)}${request.prompt.length > 80 ? '…' : ''}" model=${request.model} provider=${request.provider}`,
+  );
+
   const renderPlanningStatus = (message: string) => {
     callbacks?.onTextUpdate?.(`<step title="Planning layout" status="streaming">${message}</step>`);
   };
@@ -510,6 +519,7 @@ export async function executeOrchestration(
   try {
     // -- Phase 1: Planning (streaming) --
     renderPlanningStatus('Analyzing design structure...');
+    const phaseStart = performance.now();
 
     // Always attempt AI planning first — even for builtin providers.
     // callOrchestrator already falls back to buildFallbackPlanFromPrompt
@@ -535,6 +545,10 @@ export async function executeOrchestration(
       // Network error, timeout, or provider failure — use heuristic plan
       plan = buildFallbackPlanFromPrompt(preparedPrompt.orchestratorPrompt);
     }
+
+    console.info(
+      `[orchestrator] phase=planning elapsedMs=${phaseDuration(phaseStart)} subtaskCount=${plan.subtasks.length} rootFrame=${plan.rootFrame.width}x${plan.rootFrame.height}`,
+    );
 
     if (shouldUseDashboardColumns(request.prompt, plan)) {
       normalizeDashboardMainSubtasks(plan);
@@ -1029,6 +1043,10 @@ export async function executeOrchestration(
     // Build final rawResponse that includes step tags so the chat message
     // shows the complete pipeline progress after streaming ends
     const finalStepTags = buildFinalStepTags(plan, progress);
+
+    console.info(
+      `[orchestrator] done totalElapsedMs=${phaseDuration(orchStart)} nodes=${allNodes.length}`,
+    );
 
     return { nodes: allNodes, rawResponse: finalStepTags };
   } finally {

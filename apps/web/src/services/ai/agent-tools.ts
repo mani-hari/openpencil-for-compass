@@ -119,9 +119,9 @@ export function getCrudToolDefs(): ToolDef[] {
               'Insert after this sibling node ID (preferred). Automatically uses the same parent and places the new node right after it.',
           },
           parent: {
-            type: ['string', 'null'],
+            type: 'string',
             description:
-              'Explicit parent node ID. Use "after" instead when adding next to existing elements.',
+              'Explicit parent node ID (omit to insert at the active page root). Use "after" instead when adding next to existing elements.',
           },
           data: {
             type: 'object',
@@ -289,8 +289,9 @@ export function getAllToolDefs(): ToolDef[] {
         type: 'object',
         properties: {
           parentId: {
-            type: ['string', 'null'],
-            description: 'Parent frame ID to insert into (from plan_layout result)',
+            type: 'string',
+            description:
+              'Parent frame ID to insert into (from plan_layout result, or omit for the page root)',
           },
           nodes: {
             type: 'array',
@@ -316,9 +317,9 @@ export function getAllToolDefs(): ToolDef[] {
               'Insert after this sibling node ID (preferred). Automatically uses the same parent and places the new node right after it.',
           },
           parent: {
-            type: ['string', 'null'],
+            type: 'string',
             description:
-              'Explicit parent node ID. Use "after" instead when adding next to existing elements.',
+              'Explicit parent node ID (omit to insert at the active page root). Use "after" instead when adding next to existing elements.',
           },
           data: {
             type: 'object',
