@@ -576,15 +576,17 @@ export function useChatHandlers() {
       // -----------------------------------------------------------------------
       // BUILT-IN PROVIDER MODE
       //
-      // Two routes:
-      //   (a) Team mode (concurrency > 1) → runAgentStream() with Zig engine
-      //       for multi-member parallel generation.
-      //   (b) Default (concurrency === 1) → direct generateDesign()/streamChat
-      //       path, same as external providers. This bypasses the agent
-      //       tool-calling dance — which is where "agent finished without
-      //       producing a visible response" fires when Anthropic/Gemini
-      //       return empty content blocks. The direct path streams node JSON
-      //       straight from the model and renders it live on the canvas.
+      // ALWAYS bypass the Zig agent tool-call pipeline — that path has a
+      // reproducible failure mode where the native runtime emits only a
+      // `result` event (events=1) and closes with no text/tool/thinking
+      // output ("The agent finished without producing any text…").
+      //
+      // Fall through to the shared design/chat pipeline with provider =
+      // 'builtin', which hits /api/ai/chat → Anthropic/OpenAI-compat SDK
+      // directly and streams node JSON straight to StreamingDesignRenderer.
+      // The orchestrator reads `concurrency` from the AI store, so multi-
+      // screen parallelism still works for team requests (just without the
+      // flaky Zig lead/delegate coordination layer).
       // -----------------------------------------------------------------------
       if (model.startsWith('builtin:')) {
         const parts = model.split(':');
@@ -611,50 +613,7 @@ export function useChatHandlers() {
           return;
         }
 
-        // Team mode requested → keep the Zig agent pipeline.
-        const builtinConcurrency = useAIStore.getState().concurrency;
-        if (builtinConcurrency > 1) {
-          const modelName = parts.slice(2).join(':');
-          useAIStore.getState().clearToolCallBlocks();
-          try {
-            const result = await runAgentStream(
-              assistantMsg.id,
-              {
-                providerType: bp.type === 'anthropic' ? 'anthropic' : 'openai-compat',
-                apiKey: bp.apiKey,
-                model: modelName,
-                baseURL: bp.baseURL,
-                maxContextTokens: bp.maxContextTokens,
-              },
-              abortController,
-            );
-            if (result) accumulated = result;
-          } catch (error) {
-            if (!abortController.signal.aborted) {
-              const errMsg = error instanceof Error ? error.message : 'Unknown error';
-              accumulated += `\n\n**Error:** ${errMsg}`;
-              updateLastMessage(accumulated);
-            }
-          } finally {
-            useAIStore.getState().setAbortController(null);
-            setStreaming(false);
-          }
-
-          useAIStore.setState((s) => {
-            const msgs = [...s.messages];
-            const last = msgs.find((m) => m.id === assistantMsg.id);
-            if (last) {
-              last.content = accumulated;
-              last.isStreaming = false;
-            }
-            return { messages: msgs };
-          });
-          return;
-        }
-
-        // Default: fall through to the shared design / chat pipeline with
-        // provider = 'builtin'. This goes through /api/ai/chat which resolves
-        // the builtin API key server-side (see ai-service.ts builtinFields).
+        // fall through to shared design/chat pipeline (no Zig engine)
       }
 
       // -----------------------------------------------------------------------
